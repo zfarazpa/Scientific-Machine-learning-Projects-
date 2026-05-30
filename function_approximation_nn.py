@@ -51,7 +51,7 @@ def build_model(hidden=100):
 
 net = build_model()
 
-# ── Optimizer + LR Scheduler ──────────────────────────────────────────────────
+# ── Optimizer + LR Scheduler       Am I using the best optimizer? Why Adam???? It is wellknow :)))──────────────────────────────────────────────────
 optimizer = torch.optim.Adam(net.parameters(), lr=1e-3, weight_decay=0)
 # ConstantLR keeps the LR fixed (factor=1.0) — easy to swap for CosineAnnealingLR etc.
 scheduler = ConstantLR(optimizer, factor=1.0, total_iters=30_000)
