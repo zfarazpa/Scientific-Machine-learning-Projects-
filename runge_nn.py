@@ -1,11 +1,5 @@
-
-#Neural network approximation of the Runge function  1 / (1 + 25x²)
-#on [-1, 1].
-
-
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass, field
 
 import matplotlib.pyplot as plt
@@ -63,6 +57,9 @@ def exact_sol(x: torch.Tensor) -> torch.Tensor:
 
 def chebyshev_nodes(n: int, a: float = -1.0, b: float = 1.0) -> torch.Tensor:
     """Return n Chebyshev nodes of the first kind on [a, b], shape (n, 1)."""
+    if n <= 0:
+        raise ValueError("Number of points must be positive.")
+
     k = torch.arange(n, dtype=torch.float32)
     x = 0.5 * (a + b) + 0.5 * (b - a) * torch.cos((2 * k + 1) * np.pi / (2 * n))
     return x.reshape(-1, 1)
@@ -70,7 +67,11 @@ def chebyshev_nodes(n: int, a: float = -1.0, b: float = 1.0) -> torch.Tensor:
 
 def get_training_points(choice: int, n: int, cfg: Config) -> torch.Tensor:
     """Return training points of shape (n, 1)."""
+    if n <= 0:
+        raise ValueError("Number of training points must be positive.")
+
     a, b = cfg.a, cfg.b
+
     if choice == 1:
         print("\nChoosing random training points\n")
         return a + (b - a) * torch.rand(n, 1)
@@ -89,11 +90,25 @@ def get_training_points(choice: int, n: int, cfg: Config) -> torch.Tensor:
 # ---------------------------------------------------------------------------
 
 def build_activation(name: str) -> nn.Module:
-    return {
+    activations = {
         "tanh": nn.Tanh(),
         "leaky_relu": nn.LeakyReLU(),
         "gelu": nn.GELU(),
-    }[name]
+    }
+
+    if name not in activations:
+        raise ValueError(f"Unknown activation '{name}'. Choose from {list(activations)}.")
+
+    return activations[name]
+
+
+def initialise_layer(linear: nn.Linear, activation: str) -> None:
+    if activation == "tanh":
+        nn.init.xavier_normal_(linear.weight)
+    else:
+        nn.init.kaiming_normal_(linear.weight, nonlinearity="leaky_relu")
+
+    nn.init.zeros_(linear.bias)
 
 
 def build_network(hidden_sizes: list[int], activation: str) -> nn.Sequential:
@@ -101,12 +116,18 @@ def build_network(hidden_sizes: list[int], activation: str) -> nn.Sequential:
     Build a fully-connected network with configurable depth/width.
     Kaiming initialisation for hidden layers, Xavier for the output layer.
     """
+    if not hidden_sizes:
+        raise ValueError("hidden_sizes must contain at least one hidden layer.")
+
     layers: list[nn.Module] = []
     in_dim = 1
+
     for h in hidden_sizes:
+        if h <= 0:
+            raise ValueError("Hidden-layer sizes must be positive.")
+
         linear = nn.Linear(in_dim, h)
-        nn.init.kaiming_normal_(linear.weight, nonlinearity="leaky_relu")
-        nn.init.zeros_(linear.bias)
+        initialise_layer(linear, activation)
         layers += [linear, build_activation(activation)]
         in_dim = h
 
@@ -130,6 +151,7 @@ def train(
 ) -> list[float]:
     """Train the network and return the loss history."""
     optimizer = torch.optim.Adam(net.parameters(), lr=cfg.lr)
+
     scheduler = (
         torch.optim.lr_scheduler.CosineAnnealingLR(
             optimizer, T_max=cfg.n_iter, eta_min=cfg.eta_min
@@ -137,14 +159,15 @@ def train(
         if cfg.use_scheduler
         else None
     )
-    loss_fn = nn.MSELoss()
 
+    loss_fn = nn.MSELoss()
     best_loss = float("inf")
     patience_counter = 0
     loss_history: list[float] = []
 
     for it in range(cfg.n_iter + 1):
         net.train()
+
         y_pred = net(x_train)
         loss = loss_fn(y_pred, y_train)
 
@@ -155,6 +178,7 @@ def train(
             nn.utils.clip_grad_norm_(net.parameters(), cfg.grad_clip)
 
         optimizer.step()
+
         if scheduler is not None:
             scheduler.step()
 
@@ -172,6 +196,7 @@ def train(
                 patience_counter = 0
             else:
                 patience_counter += 1
+
             if patience_counter >= cfg.patience:
                 print(f"\nEarly stopping at iteration {it} (patience={cfg.patience}).")
                 break
@@ -190,12 +215,14 @@ def evaluate(
 ) -> tuple[torch.Tensor, float, float]:
     """Return predictions and L∞ / L² errors on the dense evaluation grid."""
     net.eval()
+
     with torch.no_grad():
         y_pred = net(x_plot)
 
     err = (y_pred - y_exact).abs()
     linf = err.max().item()
-    l2 = (((y_pred - y_exact) ** 2).mean().sqrt()).item()
+    l2 = torch.sqrt(torch.mean((y_pred - y_exact) ** 2)).item()
+
     return y_pred, linf, l2
 
 
@@ -210,23 +237,26 @@ def plot_approximation(
     x_train: torch.Tensor,
     linf: float,
     l2: float,
+    cfg: Config,
     filename: str = "NN_approximation.png",
 ) -> None:
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
     # --- Left: function approximation ---
     ax = axes[0]
-    xp = x_plot.numpy().ravel()
-    ax.plot(xp, y_exact.numpy().ravel(), "--", lw=2, label="Exact")
-    ax.plot(xp, y_pred.numpy().ravel(), "-",  lw=2, label="NN prediction")
+    xp = x_plot.detach().numpy().ravel()
+
+    ax.plot(xp, y_exact.detach().numpy().ravel(), "--", lw=2, label="Exact")
+    ax.plot(xp, y_pred.detach().numpy().ravel(), "-", lw=2, label="NN prediction")
     ax.scatter(
-        x_train.numpy().ravel(),
+        x_train.detach().numpy().ravel(),
         np.full(len(x_train), -0.03),
         marker="|", s=80, color="C2", zorder=5, label="Training pts",
     )
+
     ax.set_xlabel(r"$x$", fontsize=14)
     ax.set_ylabel(r"$f(x)$", fontsize=14)
-    ax.set_xlim(CFG.a - 0.1, CFG.b + 0.1)
+    ax.set_xlim(cfg.a - 0.1, cfg.b + 0.1)
     ax.set_ylim(-0.1, 1.15)
     ax.set_title("Runge Function Approximation", fontsize=14)
     ax.legend(fontsize=11)
@@ -234,7 +264,8 @@ def plot_approximation(
 
     # --- Right: pointwise error ---
     ax2 = axes[1]
-    err = (y_pred - y_exact).abs().numpy().ravel()
+    err = (y_pred - y_exact).abs().detach().numpy().ravel()
+
     ax2.semilogy(xp, err, color="C3", lw=2)
     ax2.set_xlabel(r"$x$", fontsize=14)
     ax2.set_ylabel("Absolute error", fontsize=14)
@@ -254,11 +285,13 @@ def plot_loss(
     filename: str = "loss_history.png",
 ) -> None:
     fig, ax = plt.subplots(figsize=(8, 5))
+
     ax.semilogy(loss_history, lw=1.5, color="C0")
     ax.set_xlabel("Iteration", fontsize=13)
     ax.set_ylabel("MSE Loss", fontsize=13)
     ax.set_title("Training Loss History", fontsize=14)
     ax.grid(True, alpha=0.4)
+
     fig.tight_layout()
     fig.savefig(filename, dpi=300, bbox_inches="tight")
     print(f"Saved → {filename}")
@@ -279,6 +312,7 @@ def main() -> None:
         "  2. Equidistant\n"
         "  3. Chebyshev nodes"
     )
+
     try:
         d = int(input("Choice: "))
         N = int(input("Number of training points: "))
@@ -296,19 +330,30 @@ def main() -> None:
     # --- Model ---
     net = build_network(CFG.hidden_sizes, CFG.activation)
     n_params = sum(p.numel() for p in net.parameters() if p.requires_grad)
-    print(f"\nNetwork: {CFG.hidden_sizes}  |  activation: {CFG.activation}  |  params: {n_params:,}\n")
+
+    print(
+        f"\nNetwork: {CFG.hidden_sizes}  |  "
+        f"activation: {CFG.activation}  |  "
+        f"params: {n_params:,}\n"
+    )
 
     # --- Train ---
     loss_history = train(net, x_train, y_train, CFG)
 
     # --- Evaluate ---
     y_pred, linf, l2 = evaluate(net, x_plot, y_exact)
+
     print(f"\nFinal errors on [{CFG.a}, {CFG.b}]:  L∞ = {linf:.4e}   L² = {l2:.4e}")
 
     # --- Plot ---
-    plot_approximation(x_plot, y_exact, y_pred, x_train, linf, l2)
+    plot_approximation(x_plot, y_exact, y_pred, x_train, linf, l2, CFG)
     plot_loss(loss_history)
 
 
 if __name__ == "__main__":
     main()
+
+
+   
+   
+   
