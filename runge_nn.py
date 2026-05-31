@@ -1,3 +1,9 @@
+"""
+Neural network approximation of the Runge function  1 / (1 + 25x²)
+on [-1, 1].
+"""
+
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
